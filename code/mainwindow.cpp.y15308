@@ -1,0 +1,153 @@
+﻿#include "mainwindow.h"
+#include "mainwidget.h"
+#include "adddialog.h"
+#define TIMER 1000
+void MainWindow::createActions(void)
+{
+    addAction = new QAction("添加旅客", this);
+    addAction->setIcon(QIcon(":/images/add.png"));
+    addAction->setShortcut(tr("Ctrl+A"));
+    addAction->setStatusTip("点击添加一个新的旅客");
+    connect(addAction, SIGNAL(triggered()), this, SLOT(add()));
+
+    aboutAction = new QAction("关于", this);
+    aboutAction->setShortcut(tr("F1"));
+    aboutAction->setStatusTip("关于本软件");
+    connect(aboutAction, SIGNAL(triggered()), this, SLOT(about()));
+
+    aboutQtAction = new QAction("关于Qt", this);
+    aboutQtAction->setShortcut(tr("F2"));
+    aboutAction->setStatusTip("关于Qt");
+    connect(aboutQtAction, SIGNAL(triggered()), this, SLOT(QMessageBox::aboutQt()));
+}
+
+void MainWindow::createMenus(void)
+{
+    manageMenu = menuBar()->addMenu("旅客管理");
+    manageMenu->addAction(addAction);
+
+    menuBar()->addSeparator();
+    helpMenu = menuBar()->addMenu("帮助");
+    helpMenu->addAction(aboutAction);
+    helpMenu->addAction(aboutQtAction);
+    return;
+}
+
+void MainWindow::about(void)
+{
+    QMessageBox::about(this, "关于本软件", "<h2>旅行线路规划</h2>"
+                                      "<p>Copyright ? 2016 YJBBRQW Inc."
+                                      "<p>本软件通过现代化信息手段，建设动态旅行规划系统，对用户需求进行分析跟进。"
+                                      "基于互联网掌握全面的交通项目信息，提供用户私人旅行路线建议，"
+                                      "以方便社会人查询交通信息、制定出行计划，促进交通事业的管理和发展。"
+                                      "根据旅客要求为其设计旅行线路。");
+}
+
+void MainWindow::add(void)
+{
+    AddDialog addDialog(this);
+    int remainingTime = timer->remainingTime();
+    timer->stop();
+    while(addDialog.exec())
+    {
+        Passenger newPassenger;
+        addDialog.getData(newPassenger);
+        if (newPassenger.demand.name.empty())
+            QMessageBox::information(this, "添加旅客错误", "请输入旅客姓名。", QMessageBox::Ok);
+        else if (newPassenger.demand.startCity == newPassenger.demand.destCity)
+            QMessageBox::information(this, "添加旅客错误", "出发城市和目的城市不能相同。", QMessageBox::Ok);
+        else if(newPassenger.demand.durLimit == 0)
+            QMessageBox::information(this, "添加旅客错误", "时间限制不能为空。", QMessageBox::Ok);
+        else
+        {
+            passengers.push_back(newPassenger);
+            QMessageBox::information(this, "添加旅客成功", "添加旅客成功。", QMessageBox::Ok);
+            vector<Passenger>::iterator it = passengers.end() - 1;
+
+            trafficMap.debug();
+            Passenger& psg = passengers.at(passengers.size() - 1);
+            psg.state.label = new QLabel("fuck");
+            int x = trafficMap.cityCoor[trafficMap.cityNameToNo[psg.demand.startCity]].x;
+            int y = trafficMap.cityCoor[trafficMap.cityNameToNo[psg.demand.startCity]].y;
+            psg.state.label->setGeometry(x, y, 100, 100);
+            psg.state.remainSlot = psg.demand.startDateTime.secsTo(*dateTime) / 60;
+            psg.state.nextEdgeIndex = psg.state.revPath.size() - 1;
+            qDebug("remainSlot = %d", psg.state.remainSlot);
+            emit addNewPassenger();
+            break;
+        }
+    }
+    timer->start(remainingTime);
+    return;
+}
+
+
+
+void MainWindow::processingTimeout(void)
+{
+    dateTime = new QDateTime(dateTime->addSecs(3600));
+    emit timeUpdated();
+    qDebug("%s", dateTime->toString("yyyy-MM-dd-hh").toStdString().c_str());
+
+    timer->stop();
+    timer->start(TIMER);
+
+    for (int i = 0; i < passengers.size(); i ++)
+    {
+        Passenger& psg = passengers[i];
+        psg.state.remainSlot --;
+        if (psg.state.remainSlot == 0 && psg.state.nextEdgeIndex >= 0)
+        {
+            psg.state.anime = new QPropertyAnimation(psg.state.label, "geometry");
+            int startCity = trafficMap.edges[psg.state.revPath[psg.state.nextEdgeIndex]].depart.city;
+            int destCity = trafficMap.edges[psg.state.revPath[psg.state.nextEdgeIndex]].arrive.city;
+            psg.state.anime->setDuration(trafficMap.edges[psg.state.revPath[psg.state.nextEdgeIndex]].dur);
+            psg.state.anime->setStartValue(QRect(trafficMap.cityCoor[startCity].x, trafficMap.cityCoor[startCity].y, 100, 100));
+            psg.state.anime->setEndValue(QRect(trafficMap.cityCoor[destCity].x, trafficMap.cityCoor[destCity].y, 100, 100));
+            psg.state.anime->start();
+            psg.state.nextEdgeIndex --;
+        }
+    }
+}
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    setWindowIcon(QIcon(":/images/logo.png"));
+    addDialog = NULL;
+    setFixedSize(MainWindowWidth, MainWindowHeight);
+    createActions();
+    createMenus();
+    mainWidget = new MainWidget;
+    setCentralWidget(mainWidget);
+
+    setAutoFillBackground(true);
+    QPalette palette;
+    palette.setBrush(QPalette::Background, QPixmap(":/images/bg9.png"));
+    setPalette(palette);
+
+    timer = new QTimer;
+    timer->start(TIMER);
+    dateTime = new QDateTime(QDateTime::currentDateTime());
+    connect(timer, SIGNAL(timeout()), this, SLOT(processingTimeout()));
+
+
+    connect(this, SIGNAL(addNewPassenger()), mainWidget, SIGNAL(addNewPassenger()));
+    connect(this, SIGNAL(selectedPassenerChanged()), mainWidget, SIGNAL(selectedPassenerChanged()));
+    connect(this, SIGNAL(timeUpdated()), mainWidget, SIGNAL(timeUpdated()));
+    QPropertyAnimation *animation = new QPropertyAnimation(this, "windowOpacity");
+    animation->setDuration(2);
+    animation->setStartValue(0);
+    animation->setEndValue(1);
+    animation->start();
+//    wait.wait();
+    animation->pause();
+//    wait.wait(500000);
+    animation->resume();
+}
+
+
+MainWindow::~MainWindow()
+{
+
+}
